@@ -1,0 +1,10 @@
+{
+  "name": "project-progress",
+  "version": "0.1.0",
+  "description": "專案進度面板：從 GitHub milestone／issue／PR 與 git log 自動彙整目前專案的開發進度與里程碑。",
+  "author": { "name": "RexWei" },
+  "license": "MIT",
+  "homepage": "https://github.com/RexWei1016/claude-project-progress",
+  "repository": "https://github.com/RexWei1016/claude-project-progress",
+  "keywords": ["claude-code", "mod", "github", "milestones", "progress", "pane"]
+}
