@@ -1,6 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Commit, Issue, Label, Milestone, Pr, SectionId, Snapshot } from '../types'
+import type { Commit, Issue, Label, Memo, Milestone, Pr, SectionId, Snapshot } from '../types'
 
 const PANE = 'project-progress'
 const COMMAND = 'project-progress'
@@ -20,7 +20,11 @@ const EMPTY: Snapshot = {
   isLoading: false,
 }
 
+const MEMO_MAX = 300
+const MEMO_DONE_SHOWN = 3
+
 const SECTIONS: Array<{ id: SectionId; title: string; hotkey: string }> = [
+  { id: 'memos', title: '備忘錄', hotkey: '0' },
   { id: 'milestones', title: '里程碑', hotkey: '1' },
   { id: 'issues', title: '未排入里程碑的 Issue', hotkey: '2' },
   { id: 'prs', title: '進行中的 PR', hotkey: '3' },
@@ -35,9 +39,29 @@ let collapsed: Partial<Record<SectionId, boolean>> = { merged: true, commits: tr
 let storeKey = ''
 let isRefreshing = false
 
+// 備忘錄狀態（模組變數，持久化在 $.store 的 memoKey）
+let memos: Memo[] = []
+let memoKey = ''
+/** 正在編輯的備忘 id；undefined 表示輸入框用來新增。 */
+let editingId: string | undefined
+/** Input 的 key 帶世代號：送出後換新 key 才能可靠清空欄位，再把焦點移回去。 */
+let inputGen = 0
+let inputSeed = ''
+let showDone = false
+/** 最近一次刪除（單筆或清除已完成），可按 u 復原。 */
+let lastRemoved: { items: Memo[]; label: string } | undefined
+let memoNotice = ''
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     storeKey = 'snapshot:' + encodeURIComponent(e.cwd)
+    memoKey = 'memo:' + encodeURIComponent(e.cwd)
+    try {
+      const saved = await $.store.get(memoKey)
+      if (Array.isArray(saved)) memos = saved.filter(isMemo)
+    } catch {
+      // 讀不到就從空白開始
+    }
     await $.command.register({
       name: COMMAND,
       description: '開啟專案進度面板：GitHub 里程碑、Issue、PR 與最近提交',
@@ -82,7 +106,10 @@ export const register: Register = on => {
     const openMilestones = s.milestones.filter(m => m.state === 'open')
     const closedMilestones = s.milestones.filter(m => m.state === 'closed')
     const unassigned = s.issues.filter(i => !i.milestone)
+    const openMemos = memos.filter(m => !m.done)
+    const doneMemos = memos.filter(m => m.done).sort((a, b) => (b.doneAt ?? 0) - (a.doneAt ?? 0))
     const counts: Record<SectionId, number> = {
+      memos: openMemos.length,
       milestones: openMilestones.length,
       issues: unassigned.length,
       prs: s.prs.length,
@@ -191,6 +218,101 @@ export const register: Register = on => {
       )
     }
 
+    // ---- 備忘錄 ----
+    // 手機版的元素表沒有 Input：那裡只顯示與勾選，不提供輸入。
+    const els = $.ui.resolve(e)
+    const Input = 'Input' in els ? els.Input : undefined
+    const inputKey = `memo-input-${inputGen}`
+    const editing = editingId ? memos.find(m => m.id === editingId) : undefined
+
+    const memoRow = (m: Memo) => {
+      const room = Math.max(8, inner - 2 - 4 - 9 - 4)
+      return (
+        <Box key={`memo-${m.id}`} paddingLeft={2} flexDirection="row" justifyContent="space-between">
+          <Box flexDirection="row">
+            <Button
+              key={`memo-check-${m.id}`}
+              plain
+              onPress={() => void toggleMemo($, m.id)}
+            >
+              <Text color={m.done ? 'success' : 'inactive'}>{m.done ? '☑ ' : '☐ '}</Text>
+            </Button>
+            <Button key={`memo-edit-${m.id}`} plain onPress={() => startEdit($, m)}>
+              <Text
+                dimColor={m.done}
+                strikethrough={m.done}
+                bold={m.id === editingId}
+                color={m.id === editingId ? 'claude' : undefined}
+                hover={{ bold: true, color: 'claude' }}
+              >
+                {fit(m.text, room)}
+              </Text>
+            </Button>
+          </Box>
+          <Box flexDirection="row">
+            <Text dimColor>{ago(m.done && m.doneAt ? m.doneAt : m.createdAt)}</Text>
+            <Button key={`memo-del-${m.id}`} plain onPress={() => void removeMemo($, m.id)}>
+              <Text color="inactive" hover={{ color: 'error', bold: true }}>{'  ✕'}</Text>
+            </Button>
+          </Box>
+        </Box>
+      )
+    }
+
+    const memoSection = (
+      <Box flexDirection="column">
+        {Input ? (
+          <Box paddingLeft={2} marginTop={1} flexDirection="column">
+            <Input
+              key={inputKey}
+              label={editing ? '編輯' : '＋'}
+              placeholder={editing ? '修改內容後按 Enter 儲存' : '新增備忘，按 Enter 加入（按 n 直接輸入）'}
+              value={inputSeed}
+              submitLabel={editing ? '儲存' : '加入'}
+              onSubmit={value => void submitMemo($, value)}
+            />
+            {editing && (
+              <Box flexDirection="row" gap={1}>
+                <Text dimColor>正在編輯一筆備忘</Text>
+                <Button key="memo-edit-cancel" plain dimColor label="取消編輯" onPress={() => cancelEdit($)} />
+              </Box>
+            )}
+          </Box>
+        ) : (
+          empty('這個介面無法輸入文字，請在桌面版或終端機新增備忘')
+        )}
+        {memoNotice !== '' && (
+          <Box paddingLeft={2}>
+            <Text color="warning">{memoNotice}</Text>
+          </Box>
+        )}
+        {lastRemoved && (
+          <Box paddingLeft={2} flexDirection="row" gap={1}>
+            <Text dimColor>{lastRemoved.label}</Text>
+            <Button key="memo-undo" plain hotkey="u" onPress={() => void undoRemove($)}>
+              <Text color="suggestion" bold>復原</Text>
+            </Button>
+          </Box>
+        )}
+        {openMemos.length === 0 && doneMemos.length === 0 && empty('還沒有備忘。記下待辦、提醒或要跟同事確認的事，只存在這台電腦。')}
+        {openMemos.length === 0 && doneMemos.length > 0 && empty('待辦都完成了')}
+        {openMemos.slice(0, limit).map(memoRow)}
+        {moreRow(openMemos.length - Math.min(openMemos.length, limit))}
+        {doneMemos.length > 0 && (
+          <Box paddingLeft={2} marginTop={openMemos.length > 0 ? 1 : 0} flexDirection="row" gap={2}>
+            <Button key="memo-done-toggle" plain onPress={() => { showDone = !showDone; redraw() }}>
+              <Text dimColor>{`${showDone ? '▾' : '▸'} 已完成 ${doneMemos.length}`}</Text>
+            </Button>
+            <Button key="memo-clear-done" plain onPress={() => void clearDone($)}>
+              <Text color="inactive" hover={{ color: 'error' }}>清除已完成</Text>
+            </Button>
+          </Box>
+        )}
+        {showDone && doneMemos.slice(0, showAll ? doneMemos.length : MEMO_DONE_SHOWN).map(memoRow)}
+        {showDone && !showAll && doneMemos.length > MEMO_DONE_SHOWN && moreRow(doneMemos.length - MEMO_DONE_SHOWN)}
+      </Box>
+    )
+
     const milestoneCard = (m: Milestone) => {
       const total = m.open + m.closed
       const pct = total === 0 ? 0 : Math.round((m.closed / total) * 100)
@@ -253,6 +375,9 @@ export const register: Register = on => {
             onPress={() => void refresh($)}
           />
           <Button key="toggle" label={showAll ? '精簡' : '全部'} hotkey="a" onPress={() => { showAll = !showAll; redraw() }} />
+          {Input && (
+            <Button key="memo-new" label="新增備忘" hotkey="n" onPress={() => void focusMemoInput($)} />
+          )}
           <Text dimColor>{s.fetchedAt ? `更新於 ${clock(s.fetchedAt)}` : '尚未更新'}</Text>
         </Box>
 
@@ -289,6 +414,10 @@ export const register: Register = on => {
               <Text dimColor>PR </Text>
               <Text bold>{String(counts.prs)}</Text>
             </Text>
+            <Text>
+              <Text dimColor>備忘 </Text>
+              <Text bold color={counts.memos > 0 ? 'warning' : undefined}>{String(counts.memos)}</Text>
+            </Text>
           </Box>
         </Box>
 
@@ -300,8 +429,12 @@ export const register: Register = on => {
           </Box>
         )}
 
-        {/* 里程碑 */}
+        {/* 備忘錄（本機） */}
         {sectionHeader(SECTIONS[0]!)}
+        {!collapsed.memos && memoSection}
+
+        {/* 里程碑 */}
+        {sectionHeader(SECTIONS[1]!)}
         {!collapsed.milestones && openMilestones.length === 0 && empty('沒有進行中的里程碑')}
         {!collapsed.milestones && openMilestones.map(milestoneCard)}
         {!collapsed.milestones && closedMilestones.length > 0 && (
@@ -311,34 +444,154 @@ export const register: Register = on => {
         )}
 
         {/* 未排入里程碑的 Issue */}
-        {sectionHeader(SECTIONS[1]!)}
+        {sectionHeader(SECTIONS[2]!)}
         {!collapsed.issues && unassigned.length === 0 && empty('所有開啟中的 Issue 都已排入里程碑')}
         {!collapsed.issues && unassigned.slice(0, limit).map(i => issueRow(i, 2))}
         {!collapsed.issues && moreRow(unassigned.length - Math.min(unassigned.length, limit))}
 
         {/* PR */}
-        {sectionHeader(SECTIONS[2]!)}
+        {sectionHeader(SECTIONS[3]!)}
         {!collapsed.prs && s.prs.length === 0 && empty('沒有開啟中的 PR')}
         {!collapsed.prs && s.prs.map(prRow)}
 
         {/* 最近合併 */}
-        {sectionHeader(SECTIONS[3]!)}
+        {sectionHeader(SECTIONS[4]!)}
         {!collapsed.merged && s.merged.length === 0 && empty('沒有合併紀錄')}
         {!collapsed.merged && s.merged.slice(0, limit).map(mergedRow)}
         {!collapsed.merged && moreRow(s.merged.length - Math.min(s.merged.length, limit))}
 
         {/* 最近提交 */}
-        {sectionHeader(SECTIONS[4]!)}
+        {sectionHeader(SECTIONS[5]!)}
         {!collapsed.commits && s.commits.length === 0 && empty('沒有提交紀錄')}
         {!collapsed.commits && s.commits.slice(0, limit).map(commitRow)}
         {!collapsed.commits && moreRow(s.commits.length - Math.min(s.commits.length, limit))}
 
         <Box marginTop={1}>
-          <Text dimColor>r 重新整理 · a 全部/精簡 · 1-5 展開/收合 · 面板開著時每 10 分鐘自動更新</Text>
+          <Text dimColor>r 重新整理 · n 新增備忘 · u 復原刪除 · a 全部/精簡 · 0-5 展開/收合 · Esc 離開輸入框</Text>
         </Box>
       </Box>
     )
   })
+}
+
+// ---- 備忘錄操作：每次變更都立即寫入 $.store ----
+
+async function saveMemos($: EngineInterface): Promise<void> {
+  $.ui.invalidate('ui.render')
+  if (!memoKey) return
+  try {
+    await $.store.set(memoKey, memos)
+    memoNotice = ''
+  } catch (err) {
+    memoNotice = `備忘沒有存起來：${message(err)}`
+    $.ui.invalidate('ui.render')
+  }
+}
+
+/** 換一個新的輸入框（清空或帶入文字），並把焦點放回去。 */
+async function resetInput($: EngineInterface, seed: string, focus: boolean): Promise<void> {
+  inputSeed = seed
+  inputGen += 1
+  $.ui.invalidate('ui.render')
+  if (focus) await focusMemoInput($)
+}
+
+async function focusMemoInput($: EngineInterface): Promise<void> {
+  if (collapsed.memos) {
+    collapsed = { ...collapsed, memos: false }
+    $.ui.invalidate('ui.render')
+  }
+  try {
+    await $.ui.focus({ requestId: PANE, key: `memo-input-${inputGen}` })
+  } catch {
+    // 面板沒拿到鍵盤時（例如焦點在對話框）就不搶焦點
+  }
+}
+
+async function submitMemo($: EngineInterface, raw: string): Promise<void> {
+  const text = raw.replace(/\s+/g, ' ').trim()
+  if (editingId) {
+    const id = editingId
+    editingId = undefined
+    if (text) memos = memos.map(m => (m.id === id ? { ...m, text } : m))
+    // 編輯時清空送出等同取消，不刪除：刪除只走 ✕，才有復原。
+  } else {
+    if (!text) return
+    if (memos.length >= MEMO_MAX) {
+      memoNotice = `備忘最多 ${MEMO_MAX} 筆，請先清除已完成的項目`
+      $.ui.invalidate('ui.render')
+      return
+    }
+    memos = [...memos, { id: newId(), text, done: false, createdAt: Date.now() }]
+  }
+  lastRemoved = undefined
+  await resetInput($, '', true)
+  await saveMemos($)
+}
+
+function startEdit($: EngineInterface, m: Memo): void {
+  editingId = m.id
+  void resetInput($, m.text, true)
+}
+
+function cancelEdit($: EngineInterface): void {
+  editingId = undefined
+  void resetInput($, '', true)
+}
+
+async function toggleMemo($: EngineInterface, id: string): Promise<void> {
+  memos = memos.map(m =>
+    m.id === id ? (m.done ? { ...m, done: false, doneAt: undefined } : { ...m, done: true, doneAt: Date.now() }) : m,
+  )
+  await saveMemos($)
+}
+
+async function removeMemo($: EngineInterface, id: string): Promise<void> {
+  const gone = memos.find(m => m.id === id)
+  if (!gone) return
+  memos = memos.filter(m => m.id !== id)
+  if (editingId === id) {
+    editingId = undefined
+    await resetInput($, '', false)
+  }
+  lastRemoved = { items: [gone], label: `已刪除「${fit(gone.text, 20)}」` }
+  await saveMemos($)
+}
+
+async function clearDone($: EngineInterface): Promise<void> {
+  const done = memos.filter(m => m.done)
+  if (done.length === 0) return
+  memos = memos.filter(m => !m.done)
+  lastRemoved = { items: done, label: `已清除 ${done.length} 筆已完成` }
+  await saveMemos($)
+}
+
+async function undoRemove($: EngineInterface): Promise<void> {
+  if (!lastRemoved) return
+  const back = lastRemoved.items.filter(r => !memos.some(m => m.id === r.id))
+  memos = [...memos, ...back].sort((a, b) => a.createdAt - b.createdAt)
+  lastRemoved = undefined
+  await saveMemos($)
+}
+
+function newId(): string {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`
+}
+
+function isMemo(value: unknown): value is Memo {
+  const m = value as Memo
+  return typeof m === 'object' && m !== null && typeof m.id === 'string' && typeof m.text === 'string'
+    && typeof m.done === 'boolean' && typeof m.createdAt === 'number'
+}
+
+/** 相對時間：剛剛、5 分、3 小時、2 天、超過一週給日期。 */
+function ago(ms: number): string {
+  const diff = Date.now() - ms
+  if (diff < 60_000) return '剛剛'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小時`
+  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天`
+  return day(new Date(ms).toISOString())
 }
 
 async function refresh($: EngineInterface): Promise<void> {

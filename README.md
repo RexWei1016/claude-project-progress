@@ -6,6 +6,7 @@ A [Claude Code](https://claude.com/claude-code) mod that opens a **project progr
 - **Open issues** not yet assigned to a milestone, with labels in their GitHub colors
 - **Open PRs** with draft and review status
 - **Recently merged PRs** and **recent commits**, commit types colored by conventional-commit prefix
+- **Memos**: a local, per-project to-do list you type into the pane. Check items off, click one to edit it, ✕ to delete with undo. Stored only on this machine, never in the repo or on GitHub
 - Issue, PR and milestone numbers are clickable links
 
 Works in the terminal and in the Claude Desktop app's Code tab. UI text is in Traditional Chinese (繁體中文); see [中文說明](#中文說明) below.
@@ -48,9 +49,11 @@ claude --plugin-dir ./claude-project-progress
 | Key / control | Action |
 | --- | --- |
 | `r` or **重新整理** | Refresh now |
+| `n` or **新增備忘** | Jump into the memo field; type, then Enter to add |
+| `u` or **復原** | Undo the last memo delete or "clear completed" |
 | `a` or **全部 / 精簡** | Show all rows / show the first 6 of each list |
-| `1` – `5` or click a section title | Collapse / expand that section |
-| Esc | Close the pane (`/project-progress` reopens it) |
+| `0` – `5` or click a section title | Collapse / expand that section (`0` is memos) |
+| Esc | Leave the memo field; again to close the pane (`/project-progress` reopens it) |
 
 Keys reach the pane while it has focus (click it, or `ctrl+x tab` in the terminal). While the pane is open it refreshes every 10 minutes.
 
@@ -59,6 +62,7 @@ Keys reach the pane while it has focus (click it, or `ctrl+x tab` in the termina
 - Reads data with `gh repo view`, `gh api .../milestones`, `gh issue list`, `gh pr list`, `git rev-parse`, `git status --porcelain` and `git log`, all run through the mod API's `$.process.run` in the session's working directory.
 - Never writes to the repo or to GitHub. The only network traffic is `gh` talking to GitHub as you.
 - Caches the last snapshot per working directory in Claude Code's local plugin store so the pane shows data immediately on the next session while it refreshes.
+- Memos live in the same local store, one list per working directory, saved on every change (up to 300 per project). The mobile app shows them but cannot add any, as it draws no text field.
 
 ## Development
 
@@ -76,9 +80,10 @@ Edit `hooks/register.tsx`; a session started with `--plugin-dir` hot-reloads on 
 - 未排入里程碑的 Issue，標籤用 GitHub 設定的顏色
 - 進行中的 PR（草稿、審核狀態）
 - 最近合併的 PR 與最近提交（依 feat／fix／docs 等前綴上色）
+- 備忘錄：每個專案一份的本機待辦，直接在面板輸入。勾選完成、點文字編輯、✕ 刪除可復原。只存在這台電腦，不寫進 repo 也不上 GitHub
 - 編號都是可以點的連結
 
-需要先安裝並登入 `gh`，工作目錄必須是有 GitHub remote 的 git repo。安裝指令同上；安裝後在 session 裡輸入 `/project-progress`。按 `r` 重新整理、`a` 切換全部／精簡、`1` 到 `5` 收合或展開各區塊、Esc 關閉面板。
+需要先安裝並登入 `gh`，工作目錄必須是有 GitHub remote 的 git repo。安裝指令同上；安裝後在 session 裡輸入 `/project-progress`。按 `r` 重新整理、`n` 新增備忘、`u` 復原刪除、`a` 切換全部／精簡、`0` 到 `5` 收合或展開各區塊（`0` 是備忘錄）；在輸入框裡按 Esc 離開輸入框，再按一次關閉面板。
 
 ## License
 

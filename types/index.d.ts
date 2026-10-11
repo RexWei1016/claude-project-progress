@@ -46,4 +46,13 @@ export type Snapshot = {
   isLoading: boolean
 }
 
-export type SectionId = 'milestones' | 'issues' | 'prs' | 'merged' | 'commits'
+export type SectionId = 'memos' | 'milestones' | 'issues' | 'prs' | 'merged' | 'commits'
+
+/** 本機備忘：依專案（工作目錄）存在 Claude Code 的 plugin store，不碰 repo 與 GitHub。 */
+export type Memo = {
+  id: string
+  text: string
+  done: boolean
+  createdAt: number
+  doneAt?: number
+}
