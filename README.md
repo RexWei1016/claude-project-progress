@@ -6,7 +6,7 @@ A [Claude Code](https://claude.com/claude-code) mod that opens a **project progr
 - **Open issues** not yet assigned to a milestone, with labels in their GitHub colors
 - **Open PRs** with draft and review status
 - **Recently merged PRs** and **recent commits**, commit types colored by conventional-commit prefix
-- **Memos**: a local, per-project to-do list you type into the pane. Check items off, click one to edit it, ✕ to delete with undo. Stored only on this machine, never in the repo or on GitHub
+- **Memos**: a local, per-project to-do list you type into the pane. Check items off, click one to edit it, ✕ to delete with undo. Stored only on this machine, never in the repo or on GitHub. Claude can read and add memos too, through the mod's `memo` tool
 - Issue, PR and milestone numbers are clickable links
 
 Works in the terminal and in the Claude Desktop app's Code tab. UI text is in Traditional Chinese (繁體中文); see [中文說明](#中文說明) below.
@@ -80,7 +80,7 @@ Edit `hooks/register.tsx`; a session started with `--plugin-dir` hot-reloads on 
 - 未排入里程碑的 Issue，標籤用 GitHub 設定的顏色
 - 進行中的 PR（草稿、審核狀態）
 - 最近合併的 PR 與最近提交（依 feat／fix／docs 等前綴上色）
-- 備忘錄：每個專案一份的本機待辦，直接在面板輸入。勾選完成、點文字編輯、✕ 刪除可復原。只存在這台電腦，不寫進 repo 也不上 GitHub
+- 備忘錄：每個專案一份的本機待辦，直接在面板輸入。勾選完成、點文字編輯、✕ 刪除可復原。只存在這台電腦，不寫進 repo 也不上 GitHub。Claude 也能透過 mod 提供的 `memo` 工具讀取與新增備忘
 - 編號都是可以點的連結
 
 需要先安裝並登入 `gh`，工作目錄必須是有 GitHub remote 的 git repo。安裝指令同上；安裝後在 session 裡輸入 `/project-progress`。按 `r` 重新整理、`n` 新增備忘、`u` 復原刪除、`a` 切換全部／精簡、`0` 到 `5` 收合或展開各區塊（`0` 是備忘錄）；在輸入框裡按 Esc 離開輸入框，再按一次關閉面板。

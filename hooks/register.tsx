@@ -22,6 +22,7 @@ const EMPTY: Snapshot = {
 
 const MEMO_MAX = 300
 const MEMO_DONE_SHOWN = 3
+const MEMO_TOOL = 'memo'
 
 const SECTIONS: Array<{ id: SectionId; title: string; hotkey: string }> = [
   { id: 'memos', title: '備忘錄', hotkey: '0' },
@@ -75,6 +76,30 @@ export const register: Register = on => {
       // 讀不到快取就從空白開始
     }
 
+    // 讓 Claude 也能讀寫這個專案的備忘（mcp__project-progress__memo），寫入走同一份記憶體與 store，面板即時更新。
+    try {
+      await $.tool.register({
+        name: MEMO_TOOL,
+        description:
+          '讀取或新增目前專案（工作目錄）的本機備忘錄，顯示在 /project-progress 面板的「備忘錄」區塊。' +
+          '只存在使用者這台電腦，不寫進 repo 也不上 GitHub。add 傳入要新增的待辦（每筆一句、可直接行動），' +
+          '不傳 add 則只列出目前備忘。已存在的相同文字不會重複新增。',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            add: {
+              type: 'array',
+              items: { type: 'string', minLength: 1, maxLength: 200 },
+              maxItems: 50,
+              description: '要新增的備忘，依顯示順序',
+            },
+          },
+        },
+      })
+    } catch {
+      // 註冊失敗只影響 Claude 代寫，面板照常
+    }
+
     $.clock.every(AUTO_REFRESH_MS, () => {
       void (async () => {
         const panes = await $.ui.panes()
@@ -83,6 +108,32 @@ export const register: Register = on => {
     })
 
     return next(e)
+  })
+
+  on('tool.call', { tool: `mcp__project-progress__${MEMO_TOOL}` }, async ($, e) => {
+    const raw = (e as unknown as { add?: unknown }).add
+    const wanted = Array.isArray(raw)
+      ? raw.filter((t): t is string => typeof t === 'string').map(t => t.replace(/\s+/g, ' ').trim()).filter(Boolean)
+      : []
+    const existing = new Set(memos.map(m => m.text))
+    const fresh = wanted.filter((t, i) => !existing.has(t) && wanted.indexOf(t) === i)
+    const room = Math.max(0, MEMO_MAX - memos.length)
+    const added = fresh.slice(0, room)
+    if (added.length > 0) {
+      const now = Date.now()
+      memos = [...memos, ...added.map((text, i) => ({ id: newId(), text, done: false, createdAt: now + i }))]
+      lastRemoved = undefined
+      await saveMemos($)
+    }
+    const lines = memos.map(m => `${m.done ? '[x]' : '[ ]'} ${m.text}`)
+    const head =
+      wanted.length === 0
+        ? `目前備忘 ${memos.length} 筆`
+        : `新增 ${added.length} 筆` +
+          (wanted.length - fresh.length > 0 ? `，${wanted.length - fresh.length} 筆已存在略過` : '') +
+          (fresh.length > added.length ? `，${fresh.length - added.length} 筆超過上限未加入` : '') +
+          `；目前共 ${memos.length} 筆`
+    return { result: [head, ...lines].join('\n') }
   })
 
   on('command.run', { command: COMMAND }, async $ => {
