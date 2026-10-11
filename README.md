@@ -10,6 +10,10 @@ A [Claude Code](https://claude.com/claude-code) mod that opens a **project progr
 
 Works in the terminal and in the Claude Desktop app's Code tab. UI text is in Traditional Chinese (繁體中文); see [中文說明](#中文說明) below.
 
+![The project-progress pane docked in the Claude Desktop Code tab: repo card, a milestone with its progress bar and issues, and unassigned issues](assets/pane-desktop.png)
+
+*The pane in the Claude Desktop Code tab. Repo name, milestone and issue titles are blanked out in this screenshot.*
+
 ## Requirements
 
 - Claude Code **2.1.287 or newer** (tested on 2.1.295). The mod API is early access and may change between releases.
