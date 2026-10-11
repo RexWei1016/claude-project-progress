@@ -110,7 +110,7 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('tool.call', { tool: `mcp__project-progress__${MEMO_TOOL}` }, async ($, e) => {
+  on('tool.call', { tool: 'mcp__project-progress__memo' }, async ($, e) => {
     const raw = (e as unknown as { add?: unknown }).add
     const wanted = Array.isArray(raw)
       ? raw.filter((t): t is string => typeof t === 'string').map(t => t.replace(/\s+/g, ' ').trim()).filter(Boolean)
