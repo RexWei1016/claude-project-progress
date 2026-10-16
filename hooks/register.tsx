@@ -1,6 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Commit, Issue, Label, Milestone, Pr, SectionId, Snapshot } from '../types'
+import type { Commit, Issue, Label, Milestone, Pr, RepoRef, SectionId, Snapshot, Workspace } from '../types'
 
 const PANE = 'project-progress'
 const COMMAND = 'project-progress'
@@ -29,15 +29,24 @@ const SECTIONS: Array<{ id: SectionId; title: string; hotkey: string }> = [
 ]
 
 // 模組變數：熱載入時會重設，但 session.start 會再從 $.store 讀回上次的快照。
+// 單一 repo 模式用 snapshot；工作目錄底下有多個 repo 時用 repos／snapshots，
+// 以子資料夾名稱當索引。
 let snapshot: Snapshot = EMPTY
+let repos: RepoRef[] = []
+let snapshots: Record<string, Snapshot> = {}
+let selected = ''
 let showAll = false
 let collapsed: Partial<Record<SectionId, boolean>> = { merged: true, commits: true }
-let storeKey = ''
+let cwdKey = ''
 let isRefreshing = false
+
+const snapshotKey = () => 'snapshot:' + cwdKey
+const repoSnapshotKey = (dir: string) => `snapshot:${cwdKey}:${encodeURIComponent(dir)}`
+const workspaceKey = () => 'workspace:' + cwdKey
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    storeKey = 'snapshot:' + encodeURIComponent(e.cwd)
+    cwdKey = encodeURIComponent(e.cwd)
     await $.command.register({
       name: COMMAND,
       description: '開啟專案進度面板：GitHub 里程碑、Issue、PR 與最近提交',
@@ -45,8 +54,20 @@ export const register: Register = on => {
     })
 
     try {
-      const cached = await $.store.get(storeKey)
-      if (isSnapshot(cached)) snapshot = { ...cached, isLoading: false }
+      const ws = await $.store.get(workspaceKey())
+      if (isWorkspace(ws) && ws.repos.length > 0) {
+        repos = ws.repos
+        selected = ws.repos.some(r => r.dir === ws.selected) ? ws.selected! : ws.repos[0]!.dir
+        await Promise.all(
+          repos.map(async r => {
+            const cached = await $.store.get(repoSnapshotKey(r.dir))
+            if (isSnapshot(cached)) snapshots[r.dir] = { ...cached, isLoading: false }
+          }),
+        )
+      } else {
+        const cached = await $.store.get(snapshotKey())
+        if (isSnapshot(cached)) snapshot = { ...cached, isLoading: false }
+      }
     } catch {
       // 讀不到快取就從空白開始
     }
@@ -73,7 +94,9 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => {
     const { Box, Text, Button, Link } = $.ui.resolve(e)
-    const s = snapshot
+    const isMulti = repos.length > 0
+    const current = isMulti ? repos.find(r => r.dir === selected) ?? repos[0] : undefined
+    const s = current ? snapshots[current.dir] ?? { ...EMPTY, isLoading: isRefreshing } : snapshot
     const cols = Math.max(28, e.props.bodyColumns ?? e.viewport?.columns ?? 60)
     const inner = cols - 4 // 卡片框線與左右內距
     const limit = showAll ? Number.MAX_SAFE_INTEGER : COLLAPSED_ROWS
@@ -253,20 +276,53 @@ export const register: Register = on => {
             onPress={() => void refresh($)}
           />
           <Button key="toggle" label={showAll ? '精簡' : '全部'} hotkey="a" onPress={() => { showAll = !showAll; redraw() }} />
+          {repos.length > 1 && (
+            <Button key="next-repo" label="下一個 repo" hotkey="n" onPress={() => void selectRepo($, 1)} />
+          )}
           <Text dimColor>{s.fetchedAt ? `更新於 ${clock(s.fetchedAt)}` : '尚未更新'}</Text>
         </Box>
+
+        {/* 多 repo 工作區：repo 切換列 */}
+        {isMulti && (
+          <Box flexDirection="row" flexWrap="wrap" gap={1} marginTop={1}>
+            {repos.map(r => {
+              const rs = snapshots[r.dir]
+              const mark = rs?.isLoading ? ' ⟳' : rs?.error ? ' !' : ''
+              return (
+                <Button
+                  key={`repo-${r.dir}`}
+                  variant={r.dir === current?.dir ? 'primary' : 'secondary'}
+                  label={r.label + mark}
+                  onPress={() => void selectRepo($, r.dir)}
+                />
+              )
+            })}
+          </Box>
+        )}
 
         {/* 專案卡 */}
         <Box flexDirection="column" marginTop={1} paddingX={1} borderStyle="round" borderColor="claude">
           <Box flexDirection="row" justifyContent="space-between">
-            <Text bold>{s.repo ? fit(s.repo.name, Math.max(8, inner - 10)) : '（尚未取得 GitHub 資料）'}</Text>
+            <Text bold>
+              {s.repo
+                ? fit(s.repo.name, Math.max(8, inner - 10))
+                : current
+                  ? fit(current.slug, Math.max(8, inner - 10))
+                  : '（尚未取得 GitHub 資料）'}
+            </Text>
             {s.repo && (
               <Link href={s.repo.url}>
                 <Text color="suggestion">GitHub ↗</Text>
               </Link>
             )}
           </Box>
-          <Box flexDirection="row" gap={2}>
+          <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+            {current && (
+              <Text>
+                <Text dimColor>資料夾 </Text>
+                <Text>{fit(current.dir, Math.max(8, inner - 8))}</Text>
+              </Text>
+            )}
             {s.branch && (
               <Text>
                 <Text dimColor>分支 </Text>
@@ -334,7 +390,9 @@ export const register: Register = on => {
         {!collapsed.commits && moreRow(s.commits.length - Math.min(s.commits.length, limit))}
 
         <Box marginTop={1}>
-          <Text dimColor>r 重新整理 · a 全部/精簡 · 1-5 展開/收合 · 面板開著時每 10 分鐘自動更新</Text>
+          <Text dimColor>
+            {`r 重新整理 · a 全部/精簡 · 1-5 展開/收合${repos.length > 1 ? ' · n 切換 repo' : ''} · 面板開著時每 10 分鐘自動更新`}
+          </Text>
         </Box>
       </Box>
     )
@@ -345,61 +403,48 @@ async function refresh($: EngineInterface): Promise<void> {
   if (isRefreshing) return
   isRefreshing = true
   try {
-    snapshot = { ...snapshot, isLoading: true, error: undefined }
-    $.ui.invalidate('ui.render')
+    const found = await detectWorkspace($)
 
-    const next: Snapshot = { ...EMPTY }
-    const errors: string[] = []
-
-    try {
-      next.branch = (await run($, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'])).trim()
-      const status = await run($, ['git', 'status', '--porcelain'])
-      next.dirty = status.split('\n').filter(l => l.trim()).length
-      const log = await run($, ['git', 'log', '--oneline', '-10', '--no-decorate'])
-      next.commits = parseLog(log)
-    } catch (err) {
-      errors.push(`git：${message(err)}`)
-    }
-
-    try {
-      const repo = JSON.parse(await run($, ['gh', 'repo', 'view', '--json', 'nameWithOwner,url'])) as {
-        nameWithOwner: string
-        url: string
-      }
-      next.repo = { name: repo.nameWithOwner, url: repo.url }
-      const [ms, issues, prs, merged] = await Promise.all([
-        run($, ['gh', 'api', `repos/${repo.nameWithOwner}/milestones?state=all&per_page=100`]),
-        run($, [
-          'gh', 'issue', 'list', '--state', 'open', '--limit', '200',
-          '--json', 'number,title,milestone,labels,updatedAt,url',
-        ]),
-        run($, [
-          'gh', 'pr', 'list', '--state', 'open', '--limit', '50',
-          '--json', 'number,title,headRefName,isDraft,reviewDecision,url',
-        ]),
-        run($, ['gh', 'pr', 'list', '--state', 'merged', '--limit', '10', '--json', 'number,title,mergedAt,url']),
-      ])
-      next.milestones = parseMilestones(ms)
-      next.issues = parseIssues(issues)
-      next.prs = parsePrs(prs)
-      next.merged = parsePrs(merged)
-    } catch (err) {
-      errors.push(`GitHub：${message(err)}`)
-    }
-
-    next.fetchedAt = await $.clock.now()
-    next.error = errors.length > 0 ? errors.join('；') : undefined
-    next.isLoading = false
-    snapshot = next
-    $.ui.invalidate('ui.render')
-
-    if (storeKey) {
+    if (!found) {
+      // 單一 repo 模式（工作目錄本身是 repo，或底下找不到任何 GitHub repo）
+      const wasMulti = repos.length > 0
+      repos = []
+      snapshots = {}
+      snapshot = { ...snapshot, isLoading: true, error: undefined }
+      $.ui.invalidate('ui.render')
       try {
-        await $.store.set(storeKey, next)
-      } catch {
-        // 快取寫不進去不影響顯示
+        snapshot = await fetchSnapshot($)
+      } catch (err) {
+        snapshot = { ...snapshot, isLoading: false, error: `更新失敗：${message(err)}` }
       }
+      $.ui.invalidate('ui.render')
+      await save($, snapshotKey(), snapshot)
+      if (wasMulti) await save($, workspaceKey(), undefined)
+      return
     }
+
+    // 多 repo 模式：每個 repo 各自抓、各自寫快取，先抓完的先畫出來
+    repos = found
+    if (!repos.some(r => r.dir === selected)) selected = repos[0]!.dir
+    const fresh: Record<string, Snapshot> = {}
+    for (const r of repos) fresh[r.dir] = { ...(snapshots[r.dir] ?? EMPTY), isLoading: true, error: undefined }
+    snapshots = fresh
+    $.ui.invalidate('ui.render')
+    await save($, workspaceKey(), { repos, selected } satisfies Workspace)
+
+    await Promise.all(
+      repos.map(async r => {
+        let next: Snapshot
+        try {
+          next = await fetchSnapshot($, r)
+        } catch (err) {
+          next = { ...(snapshots[r.dir] ?? EMPTY), isLoading: false, error: `更新失敗：${message(err)}` }
+        }
+        snapshots = { ...snapshots, [r.dir]: next }
+        $.ui.invalidate('ui.render')
+        await save($, repoSnapshotKey(r.dir), next)
+      }),
+    )
   } catch (err) {
     snapshot = { ...snapshot, isLoading: false, error: `更新失敗：${message(err)}` }
     $.ui.invalidate('ui.render')
@@ -408,8 +453,178 @@ async function refresh($: EngineInterface): Promise<void> {
   }
 }
 
-async function run($: EngineInterface, argv: readonly string[]): Promise<string> {
-  const r = await $.process.run(argv, { timeoutMs: 60_000 })
+/**
+ * 抓一個 repo 的快照。沒有 ref 時在工作目錄本身執行（單一 repo 模式，行為跟以前一樣）；
+ * 有 ref 時 git 在該子資料夾執行，gh 用 --repo 指定 owner/name。
+ */
+async function fetchSnapshot($: EngineInterface, ref?: RepoRef): Promise<Snapshot> {
+  const next: Snapshot = { ...EMPTY }
+  const errors: string[] = []
+  const cwd = ref?.dir
+
+  try {
+    next.branch = (await run($, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd)).trim()
+    const status = await run($, ['git', 'status', '--porcelain'], cwd)
+    next.dirty = status.split('\n').filter(l => l.trim()).length
+    const log = await run($, ['git', 'log', '--oneline', '-10', '--no-decorate'], cwd)
+    next.commits = parseLog(log)
+  } catch (err) {
+    errors.push(`git：${message(err)}`)
+  }
+
+  try {
+    const view = ref ? ['gh', 'repo', 'view', ref.slug] : ['gh', 'repo', 'view']
+    const repo = JSON.parse(await run($, [...view, '--json', 'nameWithOwner,url'], cwd)) as {
+      nameWithOwner: string
+      url: string
+    }
+    next.repo = { name: repo.nameWithOwner, url: repo.url }
+    const target = ref ? ['--repo', repo.nameWithOwner] : []
+    const [ms, issues, prs, merged] = await Promise.all([
+      run($, ['gh', 'api', `repos/${repo.nameWithOwner}/milestones?state=all&per_page=100`], cwd),
+      run($, [
+        'gh', 'issue', 'list', ...target, '--state', 'open', '--limit', '200',
+        '--json', 'number,title,milestone,labels,updatedAt,url',
+      ], cwd),
+      run($, [
+        'gh', 'pr', 'list', ...target, '--state', 'open', '--limit', '50',
+        '--json', 'number,title,headRefName,isDraft,reviewDecision,url',
+      ], cwd),
+      run($, ['gh', 'pr', 'list', ...target, '--state', 'merged', '--limit', '10', '--json', 'number,title,mergedAt,url'], cwd),
+    ])
+    next.milestones = parseMilestones(ms)
+    next.issues = parseIssues(issues)
+    next.prs = parsePrs(prs)
+    next.merged = parsePrs(merged)
+  } catch (err) {
+    errors.push(`GitHub：${message(err)}`)
+  }
+
+  next.fetchedAt = await $.clock.now()
+  next.error = errors.length > 0 ? errors.join('；') : undefined
+  next.isLoading = false
+  return next
+}
+
+/**
+ * 工作目錄本身是 git repo 時回傳 undefined（單一 repo 模式）。
+ * 否則找出直接子資料夾中有 GitHub remote 的 git repo；同一個 GitHub repo 的多份
+ * clone 只留一份（資料夾名稱跟 repo 同名者優先，其次是不以 _ 或 . 開頭的）。
+ * 一個都沒有時也回傳 undefined，讓單一 repo 模式照舊顯示錯誤。
+ */
+async function detectWorkspace($: EngineInterface): Promise<RepoRef[] | undefined> {
+  try {
+    const r = await $.process.run(['git', 'rev-parse', '--is-inside-work-tree'], { timeoutMs: 15_000 })
+    if (r.exitCode === 0) return undefined
+  } catch {
+    return undefined // 沒有 git 可用，交給單一 repo 模式顯示錯誤
+  }
+
+  let entries: Array<{ name: string; kind: string }>
+  try {
+    entries = await $.fs.list()
+  } catch {
+    return undefined
+  }
+
+  const candidates = await Promise.all(
+    entries
+      .filter(d => d.kind === 'dir' && !d.name.startsWith('.'))
+      .map(async d => {
+        try {
+          if (!(await $.fs.exists(`${d.name}/.git`))) return undefined
+          const r = await $.process.run(['git', 'config', '--get-regexp', '^remote\\..*\\.url$'], {
+            cwd: d.name,
+            timeoutMs: 15_000,
+          })
+          const slug = r.exitCode === 0 ? githubSlug(r.stdout) : undefined
+          return slug ? { dir: d.name, slug } : undefined
+        } catch {
+          return undefined
+        }
+      }),
+  )
+
+  const bySlug = new Map<string, { dir: string; slug: string }>()
+  for (const c of candidates) {
+    if (!c) continue
+    const key = c.slug.toLowerCase()
+    const prev = bySlug.get(key)
+    if (!prev || folderRank(c) < folderRank(prev)) bySlug.set(key, c)
+  }
+  if (bySlug.size === 0) return undefined
+
+  const picked = [...bySlug.values()]
+  const labels = shortLabels(picked.map(p => p.slug.split('/')[1] ?? p.slug))
+  return picked
+    .map((p, i) => ({ dir: p.dir, slug: p.slug, label: labels[i]! }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+}
+
+/** 從 `git config --get-regexp` 的輸出挑出 GitHub 的 owner/name，origin 優先。 */
+function githubSlug(configOutput: string): string | undefined {
+  const remotes = configOutput
+    .split('\n')
+    .map(l => /^remote\.(.+)\.url\s+(.+)$/.exec(l.trim()))
+    .filter((m): m is RegExpExecArray => m !== null)
+    .map(m => ({ name: m[1]!, slug: parseGithubUrl(m[2]!) }))
+    .filter((r): r is { name: string; slug: string } => r.slug !== undefined)
+  return (remotes.find(r => r.name === 'origin') ?? remotes[0])?.slug
+}
+
+function parseGithubUrl(url: string): string | undefined {
+  const m = /github\.com[:/]+([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i.exec(url.trim())
+  return m ? `${m[1]}/${m[2]}` : undefined
+}
+
+function folderRank(c: { dir: string; slug: string }): number {
+  const repoName = (c.slug.split('/')[1] ?? '').toLowerCase()
+  if (c.dir.toLowerCase() === repoName) return 0
+  if (!/^[_.]/.test(c.dir)) return 1
+  return 2
+}
+
+/** 去掉所有 repo 名稱共同的點號前綴與後綴（Barwand.WebAPI.CoupangWMS → WebAPI）。 */
+function shortLabels(names: string[]): string[] {
+  if (names.length < 2) return names
+  const parts = names.map(n => n.split('.'))
+  const shortest = Math.min(...parts.map(p => p.length))
+  let head = 0
+  while (head < shortest - 1 && parts.every(p => p[head] === parts[0]![head])) head++
+  let tail = 0
+  while (
+    tail < shortest - 1 - head &&
+    parts.every(p => p[p.length - 1 - tail] === parts[0]![parts[0]!.length - 1 - tail])
+  )
+    tail++
+  const out = parts.map(p => p.slice(head, p.length - tail).join('.'))
+  return out.every(s => s) && new Set(out).size === out.length ? out : names
+}
+
+async function selectRepo($: EngineInterface, to: string | 1): Promise<void> {
+  if (repos.length === 0) return
+  if (to === 1) {
+    const i = repos.findIndex(r => r.dir === selected)
+    selected = repos[(i + 1) % repos.length]!.dir
+  } else {
+    selected = to
+  }
+  $.ui.invalidate('ui.render')
+  await save($, workspaceKey(), { repos, selected } satisfies Workspace)
+}
+
+async function save($: EngineInterface, key: string, value: unknown): Promise<void> {
+  if (!cwdKey) return
+  try {
+    if (value === undefined) await $.store.delete(key)
+    else await $.store.set(key, value)
+  } catch {
+    // 快取寫不進去不影響顯示
+  }
+}
+
+async function run($: EngineInterface, argv: readonly string[], cwd?: string): Promise<string> {
+  const r = await $.process.run(argv, cwd ? { cwd, timeoutMs: 60_000 } : { timeoutMs: 60_000 })
   if (r.exitCode !== 0) {
     const first = (r.stderr || r.stdout).trim().split('\n')[0] ?? ''
     throw new Error(first || `${argv.join(' ')} 結束碼 ${r.exitCode}`)
@@ -582,6 +797,17 @@ function day(iso: string): string {
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+function isWorkspace(value: unknown): value is Workspace {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    Array.isArray((value as Workspace).repos) &&
+    (value as Workspace).repos.every(
+      r => typeof r?.dir === 'string' && typeof r.slug === 'string' && typeof r.label === 'string',
+    )
+  )
 }
 
 function isSnapshot(value: unknown): value is Snapshot {
