@@ -374,7 +374,7 @@ export const register: Register = on => {
         {openMemos.slice(0, limit).map(memoRow)}
         {moreRow(openMemos.length - Math.min(openMemos.length, limit))}
         {doneMemos.length > 0 && (
-          <Box paddingLeft={2} marginTop={openMemos.length > 0 ? 1 : 0} flexDirection="row" gap={2}>
+          <Box key="memo-done-row" paddingLeft={2} marginTop={openMemos.length > 0 ? 1 : 0} flexDirection="row" gap={2}>
             <Button key="memo-done-toggle" plain onPress={() => { showDone = !showDone; redraw() }}>
               <Text dimColor>{`${showDone ? '▾' : '▸'} 已完成 ${doneMemos.length}`}</Text>
             </Button>
