@@ -56,3 +56,19 @@ export type Memo = {
   createdAt: number
   doneAt?: number
 }
+
+/** 多 repo 模式下，工作目錄底下的一個 GitHub repo。 */
+export type RepoRef = {
+  /** 子資料夾名稱，相對於工作目錄 */
+  dir: string
+  /** GitHub 的 owner/name */
+  slug: string
+  /** 切換列上顯示的短名稱 */
+  label: string
+}
+
+/** 工作目錄本身不是 git repo、底下有多個 repo 時，偵測到的 repo 清單。 */
+export type Workspace = {
+  repos: RepoRef[]
+  selected?: string
+}

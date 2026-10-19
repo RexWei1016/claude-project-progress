@@ -1,6 +1,6 @@
 {
   "name": "project-progress",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "專案進度面板：從 GitHub milestone／issue／PR 與 git log 自動彙整目前專案的開發進度與里程碑。",
   "author": { "name": "RexWei" },
   "license": "MIT",
